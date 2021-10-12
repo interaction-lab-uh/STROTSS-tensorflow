@@ -2,19 +2,8 @@ from typing import List, Optional, Union
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import Model
-
-from debug import *
-
-debug_use_tensorflow()
 
 import utils
-
-
-INDICES = 1024
-
-
-debug_mode = not __debug__
 
 
 def gauss(
@@ -191,7 +180,7 @@ def gather_xyz(
         tf.TensorSpec(shape=[2], dtype=tf.int32),
         tf.TensorSpec(shape=[2], dtype=tf.int32),
         tf.TensorSpec(shape=[], dtype=tf.int32)])
-def tfn_gathers(content_region, sizes, steps, step_ind):
+def create_indices(content_region, sizes, steps, step_ind):
     gx, gy = tf.meshgrid(
         tf.range(sizes[0])[tf.random.uniform((), 0, steps[0], dtype=tf.int32)::steps[0]],
         tf.range(sizes[1])[tf.random.uniform((), 0, steps[1], dtype=tf.int32)::steps[1]])
@@ -203,24 +192,21 @@ def tfn_gathers(content_region, sizes, steps, step_ind):
     return retval
 
 
-def load_style_feats(
-    extractor: Model,
-    style_image: tf.Tensor,
+def create_style_features(
+    style_features: List[tf.Tensor],
     style_region: tf.Tensor,
-    n_loop: int = 5,
-    max_samples: int = 1000) -> tf.Tensor:
+    n_loop: int,
+    max_samples: int) -> tf.Tensor:
     """output shape: (batch, max_samples*n_loop, 1, channels)"""
     masked_features = None
-    region = utils.resize_like(style_region, style_image)
+    style_region = utils.resize_like(style_region, style_features[0])
 
-    for _ in tf.range(n_loop):
-        outputs = extractor(style_image)
-
-        bias = (region.numpy().max() < 0.1).astype(np.float32)
-        mask = (region.numpy().flatten() + bias) > 0.5
+    for _ in range(n_loop):
+        bias = (style_region.numpy().max() < 0.1).astype(np.float32)
+        mask = (style_region.numpy().flatten() + bias) > 0.5
 
         # create indices
-        h, w = utils.get_h_w(outputs[0])
+        h, w = utils.get_h_w(style_features[0])
         xx, xy = np.meshgrid(np.arange(h), np.arange(w))
         xx = np.expand_dims(xx.flatten(), 1)
         xy = np.expand_dims(xy.flatten(), 1)
@@ -234,67 +220,8 @@ def load_style_feats(
         xy = indices[:samples, 1]
 
         feats = None
-        for i, target in enumerate(outputs):
-            if i > 0 and outputs[i].shape[1] < outputs[i-1].shape[1]:
-                xx = xx /2.0
-                xy = xy /2.0
-            
-            h, w = utils.get_h_w(target)
-            _xx = utils.to_tensor(np.clip(xx, 0, h-1).astype(np.int32))
-            _xy = utils.to_tensor(np.clip(xy, 1, w-1).astype(np.int32))
-
-            # -> (batch, samples, 1, channels)
-            _feature = gather_xyz(target, _xx, _xy, collect_axis=1, keepdims=True)
-            if feats is None:
-                feats = tf.identity(_feature)
-            else:
-                feats = tf.concat([feats, _feature], axis=3)
-
-        # shape: [batch_size, min_index, 1, channels*len(outputs)]
-        batch, channels = utils.get_shape_by_name(feats, 'b', 'c')
-
-        feats = tf.reshape(feats, (batch, -1, 1, channels))
-        if masked_features is None:
-            masked_features = tf.identity(feats)
-        else:
-            masked_features = tf.concat([masked_features, feats], axis=1)
-
-    return masked_features
-
-
-def load_style_feats(
-    extractor: Model,
-    style_image: tf.Tensor,
-    style_region: tf.Tensor,
-    n_loop: int = 5,
-    max_samples: int = 1000) -> tf.Tensor:
-    """output shape: (batch, max_samples*n_loop, 1, channels)"""
-    masked_features = None
-    region = utils.resize_like(style_region, style_image)
-
-    for _ in tf.range(n_loop):
-        outputs = extractor(style_image)
-
-        bias = (region.numpy().max() < 0.1).astype(np.float32)
-        mask = (region.numpy().flatten() + bias) > 0.5
-
-        # create indices
-        h, w = utils.get_h_w(outputs[0])
-        xx, xy = np.meshgrid(np.arange(h), np.arange(w))
-        xx = np.expand_dims(xx.flatten(), 1)
-        xy = np.expand_dims(xy.flatten(), 1)
-        indices = np.concatenate([xx, xy], 1)
-        indices = indices[mask]
-
-        samples = min(max_samples, indices.shape[0])
-
-        np.random.default_rng().shuffle(indices)
-        xx = indices[:samples, 0]
-        xy = indices[:samples, 1]
-
-        feats = None
-        for i, target in enumerate(outputs):
-            if i > 0 and outputs[i].shape[1] < outputs[i-1].shape[1]:
+        for i, target in enumerate(style_features):
+            if i > 0 and style_features[i].shape[1] < style_features[i-1].shape[1]:
                 xx = xx /2.0
                 xy = xy /2.0
             

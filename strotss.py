@@ -17,7 +17,7 @@ import tensorflow as tf
 
 if not __debug__:
     tf.config.run_functions_eagerly(True)
-else:
+if 'CUDA_PATH' in os.environ and __debug__:
     tf.config.optimizer.set_jit(True)
 
 from tensorflow.keras.optimizers import RMSprop
@@ -26,10 +26,6 @@ import losses
 import model
 import utils
 import tensor_ops
-
-from debug import *
-
-debug_use_tensorflow()
 
 
 QUIET = False
@@ -133,7 +129,7 @@ class STROTSS_core:
                 f_is = tf.reshape(sif, self.flat_shape)
 
                 with tf.name_scope('extract_features'):
-                    target_indices = tensor_ops.tfn_gathers(
+                    target_indices = tensor_ops.create_indices(
                         mask, self.known_shape[0,:2], self.steps, self.samp_indices)
                     for j, (cf, gf) in enumerate(zip(self.content_image_features, stylized_image_features)):
                         if j > 0 and self.known_shape[j, 0] < self.known_shape[j-1, 0]:
@@ -183,11 +179,11 @@ class STROTSS_core:
 
         # style features
         self.style_image_features = []
+        style_feat = self.feature_extractor(style_image)
         for style_region in self.style_regions:
             self.style_image_features.append(
-                tensor_ops.load_style_feats(
-                    extractor=self.feature_extractor,
-                    style_image=style_image,
+                tensor_ops.create_style_features(
+                    style_features=style_feat,
                     style_region=style_region,
                     n_loop=self.in_loop,
                     max_samples=self.max_samps))        
@@ -327,8 +323,7 @@ def STROTSS(
             style_image = style,
             content_image = content,
             init_strotss_image = strotss_result,
-            init_lr = learning_rate
-        )
+            init_lr = learning_rate)
         t = timer.stop(save_time=True, return_time=True)
         if not quiet:
             print('Time(total): {}s'.format(t))

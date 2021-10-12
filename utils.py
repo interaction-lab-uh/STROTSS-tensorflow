@@ -10,9 +10,6 @@ import tensorflow as tf
 from PIL import Image
 from tensorflow.keras import backend
 
-from debug import *
-
-debug_use_tensorflow()
 
 random.seed(0)
 tf.random.set_seed(0)
