@@ -327,7 +327,7 @@ def STROTSS(
         if save_all_outputs:
             f, ext = os.path.splitext(output_path)
             utils.write_image(
-                utils.clip_and_normalize(
+                tensor_ops.clip_and_normalize(
                     strotss_result[0],
                     None,
                     optimize_mode=optimize_mode), f + '_scale_{}'.format(scale) + ext)
