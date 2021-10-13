@@ -225,8 +225,8 @@ def extract_regions(
     style_regions = []
 
     for unique in uniques:
-        c_cond: np.ndarray = (cr_image[...,0]==unique[0]) & (cr_image[...,1]&unique[1]) & (cr_image[...,2]&unique[2])
-        s_cond: np.ndarray = (sr_image[...,0]==unique[0]) & (sr_image[...,1]&unique[1]) & (sr_image[...,2]&unique[2])
+        c_cond: np.ndarray = (cr_image[...,0]==unique[0]) & (cr_image[...,1]==unique[1]) & (cr_image[...,2]==unique[2])
+        s_cond: np.ndarray = (sr_image[...,0]==unique[0]) & (sr_image[...,1]==unique[1]) & (sr_image[...,2]==unique[2])
         if np.any(c_cond) and np.any(s_cond):
             content_regions.append(
                 to_tensor(c_cond.astype(np.float32)[..., np.newaxis]))
