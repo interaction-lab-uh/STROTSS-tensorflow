@@ -32,10 +32,9 @@ class VGG16_Patch(Model):
     
     def build_vgg(self, optimize_mode: str):
         if optimize_mode in ['vgg', 'uniform', 'paper']:
-            weights = 'vgg_norm.h5'
+            weights = './sources/vgg_norm.h5'
         else:
             weights = 'imagenet'
-        print('VGG16 weight:', weights)
         vgg_base = VGG16(include_top=False, weights=weights)
         vgg_base.trainable = False
         outputs = [vgg_base.get_layer(name).output for name in self.use_layer_name]

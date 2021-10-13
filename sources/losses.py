@@ -149,13 +149,8 @@ def compute_loss(
     alpha: tf.Tensor):
     with tf.name_scope('compute_loss'):
         inv_alpha = 1./tf.maximum(alpha, 1.)
-
         l_c = self_similarity_loss(f_ic, f_ics)
-
         l_m = moment_loss(f_is, f_ics)
-
         l_r = relaxed_emd_loss(f_is, f_ics)
-
-        l_p = relaxed_emd_loss(f_is, f_ics)
-
+        l_p = relaxed_emd_palette_loss(f_is, f_ics)
         return ((alpha*l_c) + l_m + l_r + (inv_alpha*l_p)) / (2. + alpha + inv_alpha)

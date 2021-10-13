@@ -3,14 +3,7 @@ from typing import List, Optional, Union
 import numpy as np
 import tensorflow as tf
 
-import utils
-
-
-def gauss(
-    image: Union[tf.Tensor, tf.Variable, np.ndarray],
-    scales: int):
-    outs = [utils.resize_image(image, scale) for scale in scales]
-    return outs
+from . import utils
 
 
 def make_laplasian(

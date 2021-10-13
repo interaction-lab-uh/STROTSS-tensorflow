@@ -31,7 +31,7 @@ if __name__ == '__main__':
 
     parsed_args = args.parse_args()
 
-    import strotss
+    from sources import strotss
     strotss.STROTSS(
         content_path            = parsed_args.content,
         style_path              = parsed_args.style,

@@ -7,7 +7,6 @@ from typing import Any, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 import tensorflow as tf
-from PIL import Image
 from tensorflow.keras import backend
 
 
@@ -16,7 +15,7 @@ tf.random.set_seed(0)
 np.random.seed(0)
 
 
-METHOD = ['tf', 'tensorflow', 'cv2', 'pillow']
+METHOD = ['tf', 'tensorflow', 'cv2']
 ACCEPTED_NAME = [
     ['b', 'batch'],
     ['h', 'height'],
@@ -173,10 +172,6 @@ def read_image(
     """Return: [1, h, w, c]"""
     if load_img_method == 'cv2' or load_img_method not in METHOD:
         image = cv2_imread_fixed(path)
-        image = to_tensor(image)
-    elif load_img_method == 'pillow':
-        image = Image.open(path).convert('RGB')
-        image = np.asarray(image)
         image = to_tensor(image)
     elif load_img_method in ['tf', 'tensorflow']:
         ext: str = os.path.splitext(path)[1]

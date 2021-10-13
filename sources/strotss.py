@@ -22,10 +22,10 @@ if 'CUDA_PATH' in os.environ and __debug__:
 
 from tensorflow.keras.optimizers import RMSprop
 
-import losses
-import model
-import utils
-import tensor_ops
+from . import losses
+from . import model
+from . import utils
+from . import tensor_ops
 
 
 QUIET = False
@@ -200,25 +200,20 @@ class STROTSS_core:
         train_step = tf.function(self.train_step)
 
         # run
-        timer = utils.Timer()
-        t = 0.
         for i in range(self.iteration):
             if i> 0 and i%200 == 0:
                 utils.set_optimizer_lr(self.optimizer, factor=0.1)
 
-            timer.start()
             loss, grad = train_step()
             self.optimizer.apply_gradients(zip(grad, self.parameters))
-            t += timer.stop(save_time=True, return_time=True)
 
             if not QUIET:
-                print_str = 'Step/Iter: {}/{} - Loss: {:.4f} - Time(in train loop): {:.2f}s'.format(
-                    i+1, self.iteration, loss, t)
+                print_str = 'Step/Iter: {}/{} - Loss: {:.4f}'.format(i+1, self.iteration, loss)
                 if i < self.iteration - 1:
                     print_str = utils.ljust_print(print_str)
-                    print('\r'+print_str, end='')
+                    print('\r'+print_str, end='', flush=True)
                 else:
-                    print('\r'+print_str, end=' - ')
+                    print('\r'+print_str, end=' - ', flush=True)
 
         self.alpha /= 2.0
         return tensor_ops.fold_lap(self.parameters)
@@ -326,7 +321,7 @@ def STROTSS(
             init_lr = learning_rate)
         t = timer.stop(save_time=True, return_time=True)
         if not quiet:
-            print('Time(total): {}s'.format(t))
+            print('Time: {}s'.format(t))
 
         # if requied
         if save_all_outputs:
