@@ -3,6 +3,10 @@ import random
 import shutil
 import time
 from typing import Any, List, Optional, Tuple, Union
+from logging import getLogger
+logger = getLogger('strotss')
+logger.setLevel(10)
+
 
 import cv2
 import numpy as np
@@ -20,8 +24,7 @@ ACCEPTED_NAME = [
     ['b', 'batch'],
     ['h', 'height'],
     ['w', 'width'],
-    ['c', 'channel', 'channels', 'd', 'dim', 'dims']
-]
+    ['c', 'channel', 'channels', 'd', 'dim', 'dims']]
 
 
 def ljust_print(string: str):
@@ -52,6 +55,7 @@ def get_shape_ndims(
 def get_shape_by_name(
     tensor_or_array: Union[tf.Tensor, tf.Variable, np.ndarray],
     *targets) -> Union[Tuple[int], int]:
+    """Get tensor shapes according to `*targets`"""
     shape, ndim = get_shape_ndims(tensor_or_array)
 
     accepted_name = tf.nest.flatten(ACCEPTED_NAME)
@@ -90,6 +94,7 @@ def to_tensor(
     dtype: Optional[Union[tf.DType, np.dtype, str]]=None,
     as_constant: bool = False,
     name: Optional[str]=None) -> tf.Tensor:
+    """Convert object to Tensor"""
     if as_constant:
         return tf.constant(data, dtype=dtype, name=name)
     return tf.convert_to_tensor(data, dtype=dtype)
@@ -97,6 +102,7 @@ def to_tensor(
 
 def get_h_w(
     image: Union[tf.Tensor, tf.Variable, np.ndarray]) -> Tuple[int, int]:
+    """Get height, width of tensor."""
     return get_shape_by_name(image, 'height', 'width')
 
 
@@ -105,6 +111,7 @@ def resize_image(
     size: Union[Tuple[int, int], int, str],
     method: str='bilinear',
     **kwargs) -> tf.Tensor:
+    """Resize image."""
     if isinstance(size, str):
         if size not in ['half', 'downsample']:
             raise ValueError('Unknown size operation: {}'.format(size))
@@ -122,6 +129,7 @@ def resize_like(
     base_image: Union[tf.Tensor, tf.Variable, np.ndarray],
     method: str='bilinear',
     **kwargs) -> tf.Tensor:
+    """Resize `image` according to `base_image` shape."""
     return resize_image(image, get_h_w(base_image), method=method, **kwargs)
 
 
@@ -130,13 +138,14 @@ def cv2_imread_fixed(path: str) -> np.ndarray:
     if not os.path.exists(path):
         raise FileNotFoundError(path)
     raw = np.fromfile(path, np.uint8)
-    image = cv2.imdecode(raw, cv2.IMREAD_COLOR)[...,:3]
+    image = cv2.imdecode(raw, cv2.IMREAD_COLOR)[...,:3] # BGR -> RGB
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
 def write_image(
     image: Union[tf.Tensor, tf.Variable, np.ndarray],
     dst: str):
+    """Support for Japanese folders"""
     image = np.array(image, np.uint8)
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     _, ext = os.path.splitext(dst)
@@ -169,8 +178,10 @@ def read_image(
     load_img_method: str = 'cv2',
     optimize_mode: str = 'uniform'
     ) -> tf.Tensor:
-    """Return: [1, h, w, c]"""
+    """Read image, and preprocess according to `optimize_mode`."""
     if load_img_method == 'cv2' or load_img_method not in METHOD:
+        if load_img_method not in METHOD:
+            logger.warning('Unsupported load image method. using opencv2.')
         image = cv2_imread_fixed(path)
         image = to_tensor(image)
     elif load_img_method in ['tf', 'tensorflow']:
@@ -184,12 +195,16 @@ def read_image(
         raw = tf.io.read_file(path)
         image = load_function(raw, channels=3, **kwg)
 
+    # preprocess
     image = tf.cast(image, tf.float32)[tf.newaxis]
     if optimize_mode == 'uniform':
+        # range -> [-1, 1]
         image = image / 127.5 - 1.
     elif optimize_mode == 'paper':
+        # range -> [-0.5, 0.5]
         image = image / 255. - 0.5
     else:
+        # TODO: change preprocess
         # caffe and vgg
         image = image / 255.
     return image
@@ -198,7 +213,7 @@ def read_image(
 def extract_regions(
     content_r_path: str, style_r_path: str,
     threth_denominator: int = 255, threth_min_counts: int = -1,
-    noregion: bool=False) -> Tuple[List[tf.Tensor], List[tf.Tensor]]:
+    noregion: bool=False, quiet: bool=False) -> Tuple[List[tf.Tensor], List[tf.Tensor]]:
     """Read region images."""
 
     assert 0 < threth_denominator <= 256, 'Argument `threth_denominator` must be in 1 to 255.'
@@ -236,7 +251,8 @@ def extract_regions(
     if len(content_regions) == 0:
         raise RuntimeError('Could not find regions.')
 
-    print(f'Regions: {len(content_regions)}')
+    if not quiet:
+        print(f'Regions: {len(content_regions)}')
     return (content_regions, style_regions)
 
 

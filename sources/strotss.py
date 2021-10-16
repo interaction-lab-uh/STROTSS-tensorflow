@@ -1,6 +1,5 @@
 import os
 import math
-import sys
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -12,6 +11,10 @@ if 'CUDA_PATH' in os.environ and __debug__:
 
 from datetime import datetime
 from typing import List, Optional
+from logging import getLogger
+
+logger = getLogger('strotss')
+logger.setLevel(10)
 
 import tensorflow as tf
 
@@ -62,7 +65,7 @@ class STROTSS_core:
         # for reshape
         # this is used to reduce the re-tracing
         self.flat_shape = utils.to_tensor(
-            (1,-1,1,feature_extractor.dims),dtype=tf.int32, as_constant=True)
+            (1,-1,1,feature_extractor.dims), dtype=tf.int32, as_constant=True)
     
         # args
         self.in_loop = advanced_args[0]
@@ -71,9 +74,9 @@ class STROTSS_core:
 
         # for multi-scale-strategy
         self.parameters = []
-        self.content_image_features = []
-        self.style_image_features = []
-        self.known_shape = None
+        self.content_features = []
+        self.style_features = []
+        self.featue_shapes = None
         self.resized_content_regions = []
         self.steps = None
 
@@ -99,7 +102,7 @@ class STROTSS_core:
                 tf.TensorSpec(
                     shape=[1, self.samp_indices, 1, fdim], dtype=tf.float32), #f_ics
                 tf.TensorSpec(shape=(), dtype=tf.float32)]) # alpha
-        self.bsampling = tf.function(
+        self.sampling_fn = tf.function(
             tensor_ops.bilinear_resampling,
             input_signature=[
                 tf.TensorSpec(shape=[1, None, None, None], dtype=tf.float32), # content feature
@@ -112,36 +115,34 @@ class STROTSS_core:
         with tf.GradientTape() as tape:
             # get stylized features
             stylized = tensor_ops.fold_lap(self.parameters)
-            stylized_image_features = self.feature_extractor(stylized)
-
+            stylized_features = self.feature_extractor(stylized)
             # initialize loss = 0.0
             loss = tensor_ops.init_value()
-
             # loops per regions.
-            for sif, mask in zip(self.style_image_features, self.resized_content_regions):
-
+            for sif, mask in zip(self.style_features, self.resized_content_regions):
                 # initialize features = 0.
                 # this is to avoid error of autograph convertion.
                 f_ics = tensor_ops.init_value()
                 f_ic = tensor_ops.init_value()
-
                 # reshape style features.
                 f_is = tf.reshape(sif, self.flat_shape)
+                # create indices
+                target_indices = tensor_ops.create_indices(
+                    mask, self.featue_shapes[0,:2], self.steps, self.samp_indices)
+                # loops per features
+                for j, (cf, gf) in enumerate(
+                    zip(self.content_features, stylized_features)):
+                    if j> 0 and self.featue_shapes[j,0] < self.featue_shapes[j-1,0]:
+                        target_indices = target_indices / 2.
+                    cf, gf = self.sampling_fn(
+                        cf, gf, target_indices, self.featue_shapes[j])
 
-                with tf.name_scope('extract_features'):
-                    target_indices = tensor_ops.create_indices(
-                        mask, self.known_shape[0,:2], self.steps, self.samp_indices)
-                    for j, (cf, gf) in enumerate(zip(self.content_image_features, stylized_image_features)):
-                        if j > 0 and self.known_shape[j, 0] < self.known_shape[j-1, 0]:
-                            target_indices = target_indices / 2.
-                        cf, gf = self.bsampling(cf, gf, target_indices, self.known_shape[j])
-
-                        if j > 0:
-                            f_ics = tf.concat([f_ics, gf], axis=3) # 2179
-                            f_ic = tf.concat([f_ic, cf], axis=3) # 2179
-                        else:
-                            f_ics = gf
-                            f_ic = cf
+                    if j > 0:
+                        f_ics = tf.concat([f_ics, gf], axis=3) # 2179
+                        f_ic = tf.concat([f_ic, cf], axis=3) # 2179
+                    else:
+                        f_ics = gf
+                        f_ic = cf
 
                 loss += self.compute_loss_fn(f_ic, f_is, f_ics, self.alpha)
             # mean
@@ -159,34 +160,32 @@ class STROTSS_core:
         init_lr: float):
         # create variable
         self.parameters = tensor_ops.to_variable(
-            tensor_ops.create_laplasian(init_strotss_image))
+            tensor_ops.create_laplasian_pyramids(init_strotss_image))
 
         # optimizer
         utils.set_optimizer_lr(self.optimizer, learning_rate=init_lr)
 
         # content features
-        self.content_image_features = self.feature_extractor(content_image)
+        self.content_features = self.feature_extractor(content_image)
 
         # create known shapes
         # this is used to reduce the re-tracing
-        kshape = []
-        for cf in self.content_image_features:
-            kshape.append(utils.get_shape_by_name(cf,'h','w','c'))
-        self.known_shape = utils.to_tensor(kshape, tf.int32)
+        self.featue_shapes = utils.to_tensor(
+            [utils.get_shape_by_name(cf,'h','w','c') for cf in self.content_features], tf.int32)
         
         if isinstance(self.samp_indices, int):
             self.samp_indices = utils.to_tensor(self.samp_indices, tf.int32, True)
 
         # style features
-        self.style_image_features = []
+        self.style_features = []
         style_feat = self.feature_extractor(style_image)
         for style_region in self.style_regions:
-            self.style_image_features.append(
+            self.style_features.append(
                 tensor_ops.create_style_features(
                     style_features=style_feat,
                     style_region=style_region,
                     n_loop=self.in_loop,
-                    max_samples=self.max_samps))        
+                    max_samples=self.max_samps))
 
         # prepare
         h, w = content_image.shape[2:]
@@ -232,18 +231,23 @@ def STROTSS(
     threth_denominator: int,
     threth_min_counts: int,
     save_all_outputs: bool,
+    use_all_vgg_layers: bool,
     optimize_mode: str,
     quiet: bool,
+    emd_mode: str,
+    semd_n: int,
+    semd_eps: float,
     advanced_options: List[int]):
 
     global QUIET
     QUIET = quiet
 
     timer = utils.Timer()
+    losses.set_emd_algorithm(emd_mode, semd_eps, semd_n)
 
     # set scale
     scales = [2<<(5+i) for i in range(scale_max_level)]
-    
+
     if not quiet:
         scale_from_to = ''
         for i, s in enumerate(scales):
@@ -251,10 +255,10 @@ def STROTSS(
                 scale_from_to += ' -> {}'.format(s)
             else:
                 scale_from_to += str(s)
-        print('Multi scale:',scale_from_to)
-        if optimize_mode == 'caffe':
-            print('NOTE: preprocess_mode=`caffe` cannot generate image correctly.')
-        
+        print('Multi scale: '+scale_from_to)
+
+    if optimize_mode == 'caffe':
+        logger.warning('preprocess_mode=`caffe` cannot generate image correctly.')
 
     # read image
     content_image = utils.read_image(content_path, optimize_mode=optimize_mode)
@@ -270,12 +274,14 @@ def STROTSS(
         style_r_path=style_region_path or style_path,
         threth_denominator=threth_denominator,
         threth_min_counts=threth_min_counts,
-        noregion = not (content_region_path and style_region_path))
+        noregion = not (content_region_path and style_region_path),
+        quiet=quiet)
 
     output_path = output_path or datetime.now().strftime("%Y%m%d-%H%M%S")+'.png'
 
     strotss_in = STROTSS_core(
-        feature_extractor=model.VGG16_Patch(optimize_mode=optimize_mode),
+        feature_extractor=model.VGG16_Patch(
+            optimize_mode=optimize_mode, use_all_features=use_all_vgg_layers),
         content_regions=content_regions,
         style_regions=style_regions,
         alpha=alpha,
@@ -291,13 +297,13 @@ def STROTSS(
         content = utils.resize_image(content_image, scale)
         style = utils.resize_image(style_image, scale)
         if not quiet:
-            sys.stdout.write(
+            print(
                 'Scale: {}'.format(scale) +\
                 ' - Content size: {}x{}'.format(*utils.get_h_w(content)) +\
-                ' - Style size: {}x{}'.format(*utils.get_h_w(style))+'\n')
+                ' - Style size: {}x{}'.format(*utils.get_h_w(style)))
 
-        # make laplasian
-        lap_content = tensor_ops.make_laplasian(content)
+        # laplasian
+        lap_content = tensor_ops.create_laplasian(content)
 
         # iniitalize output
         if i == 0:
@@ -337,5 +343,6 @@ def STROTSS(
     utils.write_image(
         tensor_ops.clip_and_normalize(
             strotss_result[0], base, optimize_mode=optimize_mode), output_path)
-    sys.stdout.write('Total training time: {:.3f}s\n'.format(timer.total))
-    sys.stdout.write('Saved image to {}.\n'.format(output_path))
+    if not quiet:
+        print('Total training time: {:.3f}s'.format(timer.total))
+        print('Saved image to {}.\n'.format(output_path))

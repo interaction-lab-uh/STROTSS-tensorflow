@@ -14,7 +14,7 @@ if __name__ == '__main__':
     args.add_argument('--scale_level', '-l', help='Max scale for strotss, default=4 (=512 pixel) ', default=4, type=int, required=False)
     args.add_argument('--threth_denominator', '-d',
         help='Valid when region path is set. Used to detect labels in region masks.'
-        'For example, value=255 supports 6 colors, 128 supports 21 colors. default is 255.', default=255, type=int, required=False)
+        'For example, value=255 supports 6 colors, 128 supports 21 colors. default is 128', default=128, type=float, required=False)
     args.add_argument('--threth_min_counts', '-m',
         help='Valid when region path is set. Used to detect labels in region masks. '
         'Region masks with an area less than this value will be ignored. default=-1, which is determined automatically',
@@ -25,9 +25,17 @@ if __name__ == '__main__':
             default='paper', type=str, choices=['caffe', 'vgg', 'paper', 'uniform'], required=False)
     args.add_argument('--quiet', help='wheter log is quiet or not. deafult=False', action='store_true', required=False)
     args.add_argument('--save_all_outputs', help='Save output image each levels. deafult=False', action='store_true', required=False)
+    args.add_argument('--use_all_vgg_layers', help='If True, all vgg layers will be used. deafult=False', action='store_true', required=False)
     args.add_argument('--advanced_inner_loops', help='see original code (inner_loop). default=5.', default=5, type=int, required=False)
     args.add_argument('--advanced_max_subsamps', help='see original code (samps). default=1000.', default=1000, type=int, required=False)
     args.add_argument('--advanced_num_sample_grids', help='see kolkin\'s paper. default=1024.', default=1024, type=int, required=False)
+
+    # semd
+    args.add_argument('--emd_mode', default='remd', type=str, choices=['remd', 'semd'], required=False)
+
+    # sinkhorn
+    args.add_argument('--semd_n', default=30, type=int, required=False)
+    args.add_argument('--semd_eps', default=1e-01, type=float, required=False)
 
     parsed_args = args.parse_args()
 
@@ -45,8 +53,12 @@ if __name__ == '__main__':
         threth_denominator      = parsed_args.threth_denominator,
         threth_min_counts       = parsed_args.threth_min_counts,
         save_all_outputs        = parsed_args.save_all_outputs,
+        use_all_vgg_layers      = parsed_args.use_all_vgg_layers,
         optimize_mode           = parsed_args.optimize_mode,
         quiet                   = parsed_args.quiet,
+        emd_mode                = parsed_args.emd_mode,
+        semd_n                  = parsed_args.semd_n,
+        semd_eps                = parsed_args.semd_eps, 
         advanced_options        = [
             parsed_args.advanced_inner_loops,
             parsed_args.advanced_max_subsamps,

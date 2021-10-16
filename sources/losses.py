@@ -1,10 +1,20 @@
+from logging import getLogger
+logger = getLogger('strotss')
+logger.setLevel(10)
+
 import tensorflow as tf
 
-
+# Global params
 FEATURE_DIM = 2179
 SUBSAMPS = 5000
 INDICES = 1024
 
+# REMD or SEMD
+EMD_ALGORITHM = None
+
+# SEMD
+SEMD_EPS = 1e-01
+SEMD_MAX_ITER = 30
 
 def set_parameters(
     feature_dimensions: int,
@@ -14,6 +24,18 @@ def set_parameters(
     FEATURE_DIM = feature_dimensions
     SUBSAMPS = subsamps_size
     INDICES = indices_size
+
+
+def set_emd_algorithm(mode: str, semd_eps: float, semd_max_iter: int):
+    global EMD_ALGORITHM
+    global SEMD_EPS, SEMD_MAX_ITER
+    if mode == 'remd':
+        EMD_ALGORITHM = remd
+    else:
+        logger.info('Using Sinkhorn distance. It may be slower than REMD.')
+        EMD_ALGORITHM = semd
+        SEMD_EPS = semd_eps
+        SEMD_MAX_ITER = semd_max_iter
 
 
 ################################ some operations ################################
@@ -42,18 +64,17 @@ def remd(dismat: tf.Tensor) -> tf.Tensor:
         return loss
 
 
-def rt2d_color_transform(param: tf.Tensor) -> tf.Tensor:
-    # color transform matrix
-    # TODO: find this matrix source...
-    const = tf.constant([
-        [0.577350,0.577350,0.577350],
-        [-0.577350,0.788675,-0.211325],
-        [-0.577350,-0.211325,0.788675]], tf.float32)
+def color_space_transform(param: tf.Tensor) -> tf.Tensor:  
+    # RGB -> YUV transform matrix
+    krnls = tf.constant([
+        [0.299, -0.14714119, 0.61497538],
+        [0.587, -0.28886916, -0.51496512],
+        [0.114, 0.43601035, -0.10001026]], tf.float32)
 
-    with tf.name_scope('rt2d_color_transform'):
+    with tf.name_scope('color_space_transform'):
         x = tf.transpose(param, (3, 0, 1, 2)) # [3, b, h, w]
         x = tf.reshape(x, (3, -1)) # [3, b*h*w]
-        x = const @ x
+        x = krnls @ x
         return tf.transpose(x)
 
 
@@ -80,14 +101,60 @@ def cosine_distance(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
         return 1. - sim
 
 
+def mod_cost_matrix(dismat: tf.Tensor, u: tf.Tensor, v: tf.Tensor):
+    with tf.name_scope('mod_cost_matrix'):
+        return (-1.*dismat + u[:,tf.newaxis] + v[tf.newaxis]) / SEMD_EPS
+
+
+def semd(dismat: tf.Tensor):
+    with tf.name_scope('sinkhorn_earth_movers_distance'):
+        # m, n
+        # m = 1/1024, n = 1/5000
+        m = tf.constant(1/INDICES, dtype=tf.float32, shape=(INDICES,1)) # [1024, 1]
+        n = tf.constant(1/SUBSAMPS, dtype=tf.float32, shape=(SUBSAMPS,1)) # [5000, 1]
+
+        # copy m, n
+        u = tf.identity(m) # [1024, 1]
+        v = tf.identity(n) # [5000, 1]
+
+        # exponential
+        k = tf.exp(-dismat/SEMD_EPS) # [1024, 5000]
+        kp = tf.constant(INDICES, tf.float32) * k #[1024, 5000]
+
+        count = tf.constant(0, tf.int32) # count = 0
+        max_iter = tf.constant(SEMD_MAX_ITER, tf.int32)
+
+        def loop_condition(count, u, v):
+            return count < max_iter
+
+        def loop_body(count, u, v):
+            ktu = tf.maximum(tf.transpose(k) @ u, 1e-12) # [5000, 1024] @ [1024, 1] -> [5000, 1]
+            v = n / ktu # [5000, 1]
+            u = 1. / tf.maximum(kp @ v, 1e-12) # [1024, 5000] @ [5000, 1] -> [1024, 1]
+
+            count = count + 1
+            return count, u, v
+
+        _, u, v = tf.while_loop(
+            cond = loop_condition,
+            body = loop_body,
+            loop_vars= [count, u, v])
+
+        # 1. u*k -> [1024, 1] * [1024, 5000] -> [1024, 5000]
+        # 2. u*k*v.t -> [1024, 5000] * [1, 5000] -> [1024, 5000]
+        # 3. u*k*v.t*dismat -> [1024, 5000] * [1024, 5000] -> [1024, 5000]
+        loss = tf.reduce_sum(u * k * tf.transpose(v) * dismat)
+        return loss
+
+
 ################################ loss functions ################################
 
 
 def self_similarity_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
     """Compute self-similarity loss."""
     with tf.name_scope('self_similarity'):
-        y_true = reshape_to_2d(y_true[..., :FEATURE_DIM])
-        y_pred = reshape_to_2d(y_pred[..., :FEATURE_DIM])
+        y_true = reshape_to_2d(y_true[..., :FEATURE_DIM]) # [2179, 1024]
+        y_pred = reshape_to_2d(y_pred[..., :FEATURE_DIM]) # [2179, 1024]
 
         # cosine distance
         d_true = cosine_distance(y_true, y_true)
@@ -100,8 +167,8 @@ def self_similarity_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
 def moment_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
     """Compute moment loss."""
     with tf.name_scope('moment'):
-        y_true = tf.squeeze(y_true[..., :FEATURE_DIM]) # 2179, 5000
-        y_pred = tf.squeeze(y_pred[..., :FEATURE_DIM]) # 2179, 1024
+        y_true = tf.squeeze(y_true[..., :FEATURE_DIM]) # [2179, 5000]
+        y_pred = tf.squeeze(y_pred[..., :FEATURE_DIM]) # [2179, 1024]
         
         # mean
         m_true = tf.reduce_mean(y_true, axis=0, keepdims=True)
@@ -121,25 +188,25 @@ def moment_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
         return loss
 
 
-def relaxed_emd_palette_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-    r"""Compute REMD (Relaxed Earth Mover's Distance) loss, for palette loss (lp)"""
+def palette_emd_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    r"""Compute EMD (Earth Mover's Distance) loss, for palette (lp)"""
     with tf.name_scope('palette_remd'):
-        y_true = rt2d_color_transform(y_true[..., :3])
-        y_pred = rt2d_color_transform(y_pred[..., :3])
+        y_true = color_space_transform(y_true[..., :3]) # [3, 5000]
+        y_pred = color_space_transform(y_pred[..., :3]) # [3, 1024]
 
         # add l2 distance metric
         dismat = cosine_distance(y_true, y_pred) + l2_distance(y_true, y_pred)
-        return remd(dismat)
+        return EMD_ALGORITHM(dismat)
 
 
-def relaxed_emd_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-    r"""Compute REMD (Relaxed Earth Mover's Distance) loss."""
+def emd_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    r"""Compute EMD (Earth Mover's Distance) loss."""
     with tf.name_scope('remd'):
-        y_true = reshape_to_2d(y_true[..., :FEATURE_DIM])
-        y_pred = reshape_to_2d(y_pred[..., :FEATURE_DIM])
+        y_true = reshape_to_2d(y_true[..., :FEATURE_DIM]) # [2179, 5000]
+        y_pred = reshape_to_2d(y_pred[..., :FEATURE_DIM]) # [2179, 1024]
 
         dismat = cosine_distance(y_true, y_pred)
-        return remd(dismat)
+        return EMD_ALGORITHM(dismat)
 
 
 def compute_loss(
@@ -151,6 +218,8 @@ def compute_loss(
         inv_alpha = 1./tf.maximum(alpha, 1.)
         l_c = self_similarity_loss(f_ic, f_ics)
         l_m = moment_loss(f_is, f_ics)
-        l_r = relaxed_emd_loss(f_is, f_ics)
-        l_p = relaxed_emd_palette_loss(f_is, f_ics)
+        l_r = emd_loss(f_is, f_ics)
+        l_p = palette_emd_loss(f_is, f_ics)
+        # \mathcal{L}(E, I_c, I_s) = \\
+        # \frac{\alpha*l_c + l_m + l_r + \frac{1}{\alpha}l_p}{2+\alpha+\frac{1}{\alpha}}
         return ((alpha*l_c) + l_m + l_r + (inv_alpha*l_p)) / (2. + alpha + inv_alpha)
