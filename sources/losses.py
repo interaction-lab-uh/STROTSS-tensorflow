@@ -101,11 +101,6 @@ def cosine_distance(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
         return 1. - sim
 
 
-def mod_cost_matrix(dismat: tf.Tensor, u: tf.Tensor, v: tf.Tensor):
-    with tf.name_scope('mod_cost_matrix'):
-        return (-1.*dismat + u[:,tf.newaxis] + v[tf.newaxis]) / SEMD_EPS
-
-
 def semd(dismat: tf.Tensor):
     with tf.name_scope('sinkhorn_earth_movers_distance'):
         # m, n
@@ -158,9 +153,12 @@ def self_similarity_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
 
         # cosine distance
         d_true = cosine_distance(y_true, y_true)
+        d_true = d_true / tf.maximum(tf.reduce_sum(d_true, axis=0), 1e-12)
         d_pred = cosine_distance(y_pred, y_pred)
+        d_pred = d_pred / tf.maximum(tf.reduce_sum(d_pred, axis=0), 1e-12)
 
-        loss = abs_mean(d_true, d_pred)
+        loss = abs_mean(d_true, d_pred) * tf.cast(y_true.shape[0], tf.float32)
+
         return loss
 
 
