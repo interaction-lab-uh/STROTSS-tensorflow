@@ -6,9 +6,6 @@ import tensorflow as tf
 from . import utils
 
 
-rng = np.random.default_rng()
-
-
 def create_laplasian(
     image: tf.Tensor) -> tf.Tensor:
     """
@@ -234,7 +231,7 @@ def create_style_features(
 
     # numpy operation
     for i in range(n_loop):
-        rng.shuffle(indices)
+        np.random.shuffle(indices)
         xx = indices[:samples, 0]
         xy = indices[:samples, 1]
 

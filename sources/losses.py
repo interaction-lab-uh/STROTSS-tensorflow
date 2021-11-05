@@ -66,10 +66,11 @@ def remd(dismat: tf.Tensor) -> tf.Tensor:
 
 def color_space_transform(param: tf.Tensor) -> tf.Tensor:  
     # RGB -> YUV transform matrix
+    #krnls = tf.constant([[0.299, -0.14714119, 0.61497538],[0.587, -0.28886916, -0.51496512],[0.114, 0.43601035, -0.10001026]], tf.float32)
     krnls = tf.constant([
-        [0.299, -0.14714119, 0.61497538],
-        [0.587, -0.28886916, -0.51496512],
-        [0.114, 0.43601035, -0.10001026]], tf.float32)
+        [0.577350,0.577350,0.577350],
+        [-0.577350,0.788675,-0.211325],
+        [-0.577350,-0.211325,0.788675]], tf.float32)
 
     with tf.name_scope('color_space_transform'):
         x = tf.transpose(param, (3, 0, 1, 2)) # [3, b, h, w]
@@ -176,11 +177,11 @@ def moment_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
         cent_pred = y_true - m_true
         cent_true = y_pred - m_pred
 
-        # invariant variance
+        # variance
         var_pred = tf.transpose(cent_pred) @ cent_pred
         var_true = tf.transpose(cent_true) @ cent_true
-        var_true = var_true / tf.constant(SUBSAMPS-1, var_true.dtype)
-        var_pred = var_pred / tf.constant(INDICES-1, var_pred.dtype)
+        var_true = var_true / tf.constant(SUBSAMPS, var_true.dtype)
+        var_pred = var_pred / tf.constant(INDICES, var_pred.dtype)
 
         loss = abs_mean(m_true, m_pred) + abs_mean(var_true, var_pred)
         return loss
