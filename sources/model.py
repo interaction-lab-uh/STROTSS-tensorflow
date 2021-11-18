@@ -1,12 +1,13 @@
 from typing import List
 
 import tensorflow as tf
+import tensorflow.keras as keras
 from tensorflow.keras import Model
 from tensorflow.keras.applications.imagenet_utils import preprocess_input
 from tensorflow.keras.applications.vgg16 import VGG16
 
 
-class VGG16_Patch(Model):
+class VGG16_Patch(keras.Model):
     layer_name: List[str] = [
         "block1_conv1",
         "block1_conv2",
@@ -24,7 +25,7 @@ class VGG16_Patch(Model):
 
     def __init__(self, optimize_mode: str, use_all_features: bool):
         super().__init__()
-        if optimize_mode in ['vgg', 'uniform', 'paper']:
+        if optimize_mode != 'caffe':
             weights = './sources/vgg_norm.h5'
         else:
             weights = 'imagenet'
@@ -37,31 +38,27 @@ class VGG16_Patch(Model):
         else:
             use_layers = self.layer_name.copy()
         outputs = [vgg_base.get_layer(name).output for name in use_layers]
+
         self.vgg = Model(inputs=vgg_base.inputs, outputs=outputs)
-        self.dims = 3 + sum([o.shape[-1] for o in outputs]) # 2179
+        self.dims = 3 + sum(o.shape[-1] for o in outputs) # 2179
+        self.layer_counts = len(use_layers) + 1
 
-        if optimize_mode == 'uniform':
-            self.function = self.uniform_prerpocess
+        if optimize_mode == 'torch_uniform':
+            self.preprocess_function = self.uniform_prerpocess
         elif optimize_mode == 'caffe':
-            self.function = self.caffe_preprocess
-        elif optimize_mode == 'vgg':
-            self.function = self.torch_preprocess
+            self.preprocess_function = self.caffe_preprocess
         else:
-            self.function = lambda x: x
+            self.preprocess_function = self.torch_preprocess
 
-    @property
-    def num_outputs(self) -> int:
-        return len(self.layer_name) + 1
-
-    def uniform_prerpocess(self, inputs: tf.Tensor):
+    def uniform_prerpocess(self, inputs: tf.Tensor) -> tf.Tensor:
         x = (inputs + 1.) / 2.
-        return preprocess_input(255 * x, mode='torch')
+        return self.torch_preprocess(x)
 
-    def caffe_preprocess(self, inputs: tf.Tensor):
+    def caffe_preprocess(self, inputs: tf.Tensor) -> tf.Tensor:
         return preprocess_input(255 * inputs, mode='caffe')
     
-    def torch_preprocess(self, inputs: tf.Tensor):
+    def torch_preprocess(self, inputs: tf.Tensor) -> tf.Tensor:
         return preprocess_input(255 * inputs, mode='torch')
-    
+
     def call(self, inputs: tf.Tensor) -> List[tf.Tensor]:
-        return [tf.identity(inputs)] + self.vgg(self.function(inputs))
+        return [tf.identity(inputs)] + self.vgg(self.preprocess_function(inputs))

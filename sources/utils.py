@@ -1,5 +1,4 @@
 import os
-import random
 import shutil
 import time
 from typing import Any, List, Optional, Tuple, Union
@@ -7,16 +6,9 @@ from logging import getLogger
 logger = getLogger('strotss')
 logger.setLevel(10)
 
-
 import cv2
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import backend
-
-
-random.seed(0)
-tf.random.set_seed(0)
-np.random.seed(0)
 
 
 METHOD = ['tf', 'tensorflow', 'cv2']
@@ -59,7 +51,7 @@ def get_shape_by_name(
     shape, ndim = get_shape_ndims(tensor_or_array)
 
     accepted_name = tf.nest.flatten(ACCEPTED_NAME)
-    is_channels_last = backend.image_data_format() == 'channels_last'
+    is_channels_last = tf.keras.backend.image_data_format() == 'channels_last'
     collects = []
     for _name in tf.nest.flatten(targets):
         if not isinstance(_name, str):
@@ -152,8 +144,12 @@ def write_image(
     result, n = cv2.imencode(ext, image)
 
     if result:
-        with open(dst, 'w+b') as f:
-            n.tofile(f)
+        try:
+            with open(dst, 'w+b') as f:
+                n.tofile(f)
+        except OSError:
+            raise OSError(
+                'Failed to write image ({}). If it is open in another application, please close it.'.format(dst))
     else:
         raise RuntimeError('Failed to save image.')
 
@@ -162,7 +158,7 @@ def set_optimizer_lr(
     optimizer, 
     factor: Optional[float] = None,
     learning_rate: Optional[float] = None):
-    current_lr = backend.get_value(optimizer.lr)
+    current_lr = tf.keras.backend.get_value(optimizer.lr)
 
     if learning_rate is None:
         if factor is None:
@@ -170,7 +166,7 @@ def set_optimizer_lr(
         new_lr = current_lr * factor
     else:
         new_lr = learning_rate
-    backend.set_value(optimizer.lr, new_lr)
+    tf.keras.backend.set_value(optimizer.lr, new_lr)
 
 
 def read_image(
@@ -197,23 +193,54 @@ def read_image(
 
     # preprocess
     image = tf.cast(image, tf.float32)[tf.newaxis]
-    if optimize_mode == 'uniform':
+    if optimize_mode == 'torch_uniform':
         # range -> [-1, 1]
         image = image / 127.5 - 1.
-    elif optimize_mode == 'paper':
-        # range -> [-0.5, 0.5]
-        image = image / 255. - 0.5
-    else:
-        # TODO: change preprocess
-        # caffe and vgg
+    else: # range -> [0, 1]
         image = image / 255.
     return image
+
+
+def add_signature(
+    img: Union[tf.Tensor, tf.Variable, np.ndarray],
+    text: str,
+    fontFace: int = cv2.FONT_HERSHEY_SIMPLEX,
+    color: Tuple[int, int, int] = (255, 255, 255),
+    thickness: int = 1,
+    lineType: int = cv2.LINE_AA,
+    bottomLeftOrigin: bool = False) -> np.ndarray:
+    """
+    Put text on image.
+    Returns:
+        Image with text on it.
+    """
+    img = np.array(img)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    fontScale = max(min(max(img.shape)/1024, 1.0), 0.1)
+    (text_w, text_h), _ = cv2.getTextSize(
+                text=text,
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=fontScale,
+                thickness=thickness)
+    crop_area = img[img.shape[0]-text_h:img.shape[0], img.shape[1]-text_w:img.shape[1]]
+    means = np.mean(crop_area, axis=(0, 1), keepdims=True).mean()
+    cv2.putText(
+        img,
+        text,
+        org=(img.shape[1] - text_w, img.shape[0] - text_h),
+        fontFace=fontFace,
+        fontScale=fontScale,
+        color=[255*int(means < 128)]*3,
+        thickness=thickness,
+        lineType=lineType,
+        bottomLeftOrigin=bottomLeftOrigin)
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
 def extract_regions(
     content_r_path: str, style_r_path: str,
     threth_denominator: int = 255, threth_min_counts: int = -1,
-    noregion: bool=False, quiet: bool=False) -> Tuple[List[tf.Tensor], List[tf.Tensor]]:
+    noregion: bool=False) -> Tuple[List[tf.Tensor], List[tf.Tensor]]:
     """Read region images."""
 
     assert 0 < threth_denominator <= 256, 'Argument `threth_denominator` must be in 1 to 255.'
@@ -251,8 +278,7 @@ def extract_regions(
     if len(content_regions) == 0:
         raise RuntimeError('Could not find regions.')
 
-    if not quiet:
-        print(f'Regions: {len(content_regions)}')
+    print(f'Regions: {len(content_regions)}')
     return (content_regions, style_regions)
 
 

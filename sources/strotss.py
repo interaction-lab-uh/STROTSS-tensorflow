@@ -1,16 +1,8 @@
 import os
 import math
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-if 'CUDA_PATH' in os.environ and __debug__:
-    os.environ['TF_XLA_FLAGS'] = '--tf_xla_cpu_global_jit'
-    if os.name == 'nt':
-        xla_flags = '--xla_gpu_cuda_data_dir="{}"'.format(os.environ['CUDA_PATH']).replace('\\', '/')
-        os.environ['XLA_FLAGS'] = xla_flags
-
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional, Callable, Tuple
 from logging import getLogger
 
 logger = getLogger('strotss')
@@ -18,23 +10,28 @@ logger.setLevel(10)
 
 import tensorflow as tf
 
-if not __debug__:
-    tf.config.run_functions_eagerly(True)
-if 'CUDA_PATH' in os.environ and __debug__:
-    tf.config.optimizer.set_jit(True)
-
-from tensorflow.keras.optimizers import RMSprop
-
 from . import losses
 from . import model
 from . import utils
 from . import tensor_ops
 
 
-QUIET = False
+IN_LOOP = 5
+MAX_SUBSAMPS = 1000
+NUM_SAMPLE_GRIDS = 1024
 
 
-class STROTSS_core:
+def set_global_parameters(
+    in_loop: int,
+    max_subsamps: int,
+    num_sample_grids: int):
+    global IN_LOOP, MAX_SUBSAMPS, NUM_SAMPLE_GRIDS
+    IN_LOOP = in_loop
+    MAX_SUBSAMPS = max_subsamps
+    NUM_SAMPLE_GRIDS = num_sample_grids
+
+
+class STROTSS_trainer:
     """
     Training class.
     This is because STROTSS need to learn the parameters for different scales.
@@ -46,31 +43,25 @@ class STROTSS_core:
         content_regions: List[tf.Tensor],
         style_regions: List[tf.Tensor],
         alpha: float,
-        iteration: int,
-        advanced_args: List[int]):
+        iteration: int):
 
         # model, optimizer, regions
         self.feature_extractor = feature_extractor
-        self.optimizer = RMSprop(rho=0.99, epsilon=1e-08)
+        self.optimizer = tf.keras.optimizers.RMSprop(rho=0.99, epsilon=1e-08)
         self.content_regions = content_regions
         self.style_regions = style_regions
 
         # hyper-parameters
         self.alpha = utils.to_tensor(alpha, tf.float32)
+
+        # total regions, used compute loss
         self.num_regions = utils.to_tensor(len(content_regions), tf.float32)
 
         # iteration
         self.iteration = iteration
-
-        # for reshape
-        # this is used to reduce the re-tracing
-        self.flat_shape = utils.to_tensor(
-            (1,-1,1,feature_extractor.dims), dtype=tf.int32, as_constant=True)
     
-        # args
-        self.in_loop = advanced_args[0]
-        self.max_samps = advanced_args[1]
-        self.samp_indices = advanced_args[2]
+        # indices
+        self.samp_indices = utils.to_tensor(NUM_SAMPLE_GRIDS, tf.int32)
 
         # for multi-scale-strategy
         self.parameters = []
@@ -85,30 +76,32 @@ class STROTSS_core:
 
     def build_tf_function(self):
         fdim = self.feature_extractor.dims
-        subsamps_size = self.in_loop*self.max_samps
-        losses.set_parameters(
+        subsamps_size = IN_LOOP*MAX_SUBSAMPS
+        losses.set_global_parameters(
             feature_dimensions=fdim,
             subsamps_size=subsamps_size,
-            indices_size=self.samp_indices)
+            indices_size=NUM_SAMPLE_GRIDS)
         
         # input_signature can protect re-tracing
-        self.compute_loss_fn = tf.function(
-            losses.compute_loss,
-            input_signature=[
-                tf.TensorSpec(
-                    shape=[1, self.samp_indices, 1, fdim], dtype=tf.float32), #f_ic
-                tf.TensorSpec(
-                    shape=[1, subsamps_size, 1, fdim], dtype=tf.float32), #f_is
-                tf.TensorSpec(
-                    shape=[1, self.samp_indices, 1, fdim], dtype=tf.float32), #f_ics
-                tf.TensorSpec(shape=(), dtype=tf.float32)]) # alpha
-        self.sampling_fn = tf.function(
-            tensor_ops.bilinear_resampling,
-            input_signature=[
-                tf.TensorSpec(shape=[1, None, None, None], dtype=tf.float32), # content feature
-                tf.TensorSpec(shape=[1, None, None, None], dtype=tf.float32), # stylized feature
-                tf.TensorSpec(shape=[self.samp_indices, 2], dtype=tf.float32), # indices
-                tf.TensorSpec(shape=[3], dtype=tf.int32)]) # content_shape
+        self.compute_loss: Callable[
+            [tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor] = tf.function(
+                losses.nowrap_compute_loss,
+                input_signature=[
+                    tf.TensorSpec(
+                        shape=[1, NUM_SAMPLE_GRIDS, 1, fdim], dtype=tf.float32), #f_ic
+                    tf.TensorSpec(
+                        shape=[1, subsamps_size, 1, fdim], dtype=tf.float32), #f_is
+                    tf.TensorSpec(
+                        shape=[1, NUM_SAMPLE_GRIDS, 1, fdim], dtype=tf.float32), #f_ics
+                    tf.TensorSpec(shape=(), dtype=tf.float32)]) # alpha
+        self.bilinear_resampling: Callable[
+            [tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor] = tf.function(
+                tensor_ops.nowrap_bilinear_resampling,
+                input_signature=[
+                    tf.TensorSpec(shape=[1, None, None, None], dtype=tf.float32), # content feature
+                    tf.TensorSpec(shape=[1, None, None, None], dtype=tf.float32), # stylized feature
+                    tf.TensorSpec(shape=[NUM_SAMPLE_GRIDS, 2], dtype=tf.float32), # indices
+                    tf.TensorSpec(shape=[4], dtype=tf.int32)]) # content_shape
 
     def train_step(self):
         """Re-tracing = (num_regions)*(num vgg model outputs)*(num multi scales)"""
@@ -117,34 +110,41 @@ class STROTSS_core:
             stylized = tensor_ops.fold_lap(self.parameters)
             stylized_features = self.feature_extractor(stylized)
             # initialize loss = 0.0
-            loss = tensor_ops.init_value()
-            # loops per regions.
+            loss = tensor_ops.init_zeros()
+            # Loop by region
             for sif, mask in zip(self.style_features, self.resized_content_regions):
-                # initialize features = 0.
-                # this is to avoid error of autograph convertion.
-                f_ics = tensor_ops.init_value()
-                f_ic = tensor_ops.init_value()
                 # reshape style features.
-                f_is = tf.reshape(sif, self.flat_shape)
+                f_is = sif.reshape((1,-1,1,self.feature_extractor.dims))
                 # create indices
                 target_indices = tensor_ops.create_indices(
-                    mask, self.featue_shapes[0,:2], self.steps, self.samp_indices)
+                    mask,
+                    self.featue_shapes[0],
+                    self.steps,
+                    self.samp_indices)
+
+                # resample features (index 0)
+                f_ic, f_ics = self.bilinear_resampling(
+                    self.content_features[0],
+                    stylized_features[0],
+                    target_indices,
+                    self.featue_shapes[0])
                 # loops per features
-                for j, (cf, gf) in enumerate(
-                    zip(self.content_features, stylized_features)):
-                    if j> 0 and self.featue_shapes[j,0] < self.featue_shapes[j-1,0]:
-                        target_indices = target_indices / 2.
-                    cf, gf = self.sampling_fn(
-                        cf, gf, target_indices, self.featue_shapes[j])
+                for j in range(1, self.feature_extractor.layer_counts):
+                    target_indices = target_indices /\
+                        tf.cast(self.featue_shapes[j,3], target_indices.dtype)
 
-                    if j > 0:
-                        f_ics = tf.concat([f_ics, gf], axis=3) # 2179
-                        f_ic = tf.concat([f_ic, cf], axis=3) # 2179
-                    else:
-                        f_ics = gf
-                        f_ic = cf
+                    # resample features
+                    cf, xf = self.bilinear_resampling(
+                        self.content_features[j],
+                        stylized_features[j],
+                        target_indices,
+                        self.featue_shapes[j])
 
-                loss += self.compute_loss_fn(f_ic, f_is, f_ics, self.alpha)
+                    # concat along channel dimension
+                    f_ic = tf.concat([f_ic, cf], axis=3)
+                    f_ics = tf.concat([f_ics, xf], axis=3)
+
+                loss += self.compute_loss(f_ic, f_is, f_ics, self.alpha)
             # mean
             loss /= self.num_regions
 
@@ -154,7 +154,7 @@ class STROTSS_core:
 
     def multi_scale_strategy(
         self,
-        style_image: tf.Tensor, # unused
+        style_image: tf.Tensor,
         content_image: tf.Tensor,
         init_strotss_image: tf.Tensor,
         init_lr: float):
@@ -170,11 +170,12 @@ class STROTSS_core:
 
         # create known shapes
         # this is used to reduce the re-tracing
-        self.featue_shapes = utils.to_tensor(
-            [utils.get_shape_by_name(cf,'h','w','c') for cf in self.content_features], tf.int32)
-        
-        if isinstance(self.samp_indices, int):
-            self.samp_indices = utils.to_tensor(self.samp_indices, tf.int32, True)
+        self.featue_shapes = []
+        for i, cf in enumerate(self.content_features):
+            fs = list(utils.get_shape_by_name(cf, 'h','w','c'))
+            fs.append(1 + int(i > 0 and fs[0] < self.featue_shapes[i-1][0]))
+            self.featue_shapes.append(fs)
+        self.featue_shapes = utils.to_tensor(self.featue_shapes, dtype=tf.int32)
 
         # style features
         self.style_features = []
@@ -184,19 +185,20 @@ class STROTSS_core:
                 tensor_ops.create_style_features(
                     style_features=style_feat,
                     style_region=style_region,
-                    n_loop=self.in_loop,
-                    max_samples=self.max_samps))
+                    n_loop=IN_LOOP,
+                    max_samples=MAX_SUBSAMPS))
 
         # prepare
         h, w = content_image.shape[2:]
-        areas = float(((h*w)//16384)**0.5)
+        areas = math.sqrt((h*w)//16384)
         self.steps = utils.to_tensor(
             [max(1, math.floor(areas)), max(1, math.ceil(areas))], tf.int32, True)
         self.resized_content_regions = [
             tf.cast(utils.resize_like(cr, content_image), tf.bool) for cr in self.content_regions]
 
         # convert to tf.function
-        train_step = tf.function(self.train_step)
+        train_step: Callable[
+            [], Tuple[tf.Tensor, List[tf.Tensor]]] = tf.function(self.train_step)
 
         # run
         for i in range(self.iteration):
@@ -206,13 +208,12 @@ class STROTSS_core:
             loss, grad = train_step()
             self.optimizer.apply_gradients(zip(grad, self.parameters))
 
-            if not QUIET:
-                print_str = 'Step/Iter: {}/{} - Loss: {:.4f}'.format(i+1, self.iteration, loss)
-                if i < self.iteration - 1:
-                    print_str = utils.ljust_print(print_str)
-                    print('\r'+print_str, end='', flush=True)
-                else:
-                    print('\r'+print_str, end=' - ', flush=True)
+            print_str = 'Step/Iter: {}/{} - Loss: {:.4f}'.format(i+1, self.iteration, loss)
+            if i < self.iteration - 1:
+                print_str = utils.ljust_print(print_str)
+                print('\r'+print_str, end='', flush=True)
+            else:
+                print('\r'+print_str, end=' - ', flush=True)
 
         self.alpha /= 2.0
         return tensor_ops.fold_lap(self.parameters)
@@ -233,29 +234,21 @@ def STROTSS(
     save_all_outputs: bool,
     use_all_vgg_layers: bool,
     optimize_mode: str,
-    quiet: bool,
-    emd_mode: str,
-    semd_n: int,
-    semd_eps: float,
-    advanced_options: List[int]):
-
-    global QUIET
-    QUIET = quiet
+    signature_text: Optional[str],
+    record_to_tensorboard: bool):
 
     timer = utils.Timer()
-    losses.set_emd_algorithm(emd_mode, semd_eps, semd_n)
 
     # set scale
     scales = [2<<(5+i) for i in range(scale_max_level)]
 
-    if not quiet:
-        scale_from_to = ''
-        for i, s in enumerate(scales):
-            if i>0:
-                scale_from_to += ' -> {}'.format(s)
-            else:
-                scale_from_to += str(s)
-        print('Multi scale: '+scale_from_to)
+    scale_from_to = ''
+    for i, s in enumerate(scales):
+        if i>0:
+            scale_from_to += ' -> {}'.format(s)
+        else:
+            scale_from_to += str(s)
+    print('Scale: '+scale_from_to)
 
     if optimize_mode == 'caffe':
         logger.warning('preprocess_mode=`caffe` cannot generate image correctly.')
@@ -264,9 +257,8 @@ def STROTSS(
     content_image = utils.read_image(content_path, optimize_mode=optimize_mode)
     style_image = utils.read_image(style_path, optimize_mode=optimize_mode)
 
-    if not quiet:
-        print('Input content: {}x{}'.format(*utils.get_h_w(content_image))+\
-            ' - Input style: {}x{}'.format(*utils.get_h_w(style_image)))
+    print('Input content: {}x{}'.format(*utils.get_h_w(content_image))+\
+        ' - Input style: {}x{}'.format(*utils.get_h_w(style_image)))
 
     # extract regions
     content_regions, style_regions = utils.extract_regions(
@@ -274,33 +266,35 @@ def STROTSS(
         style_r_path=style_region_path or style_path,
         threth_denominator=threth_denominator,
         threth_min_counts=threth_min_counts,
-        noregion = not (content_region_path and style_region_path),
-        quiet=quiet)
+        noregion = not (content_region_path and style_region_path))
 
-    output_path = output_path or datetime.now().strftime("%Y%m%d-%H%M%S")+'.png'
+    current_date = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_path = output_path or current_date+'.png'
 
-    strotss_in = STROTSS_core(
+    strotss_in = STROTSS_trainer(
         feature_extractor=model.VGG16_Patch(
-            optimize_mode=optimize_mode, use_all_features=use_all_vgg_layers),
+            optimize_mode=optimize_mode,
+            use_all_features=use_all_vgg_layers),
         content_regions=content_regions,
         style_regions=style_regions,
         alpha=alpha,
-        iteration=train_iteration,
-        advanced_args=advanced_options)
+        iteration=train_iteration)
 
     # multi-scale strategy (64px -> ...)
     for i, scale in enumerate(scales):
+        if record_to_tensorboard:
+            logdir = 'logs/{}/{}'.format(current_date, scale)
+            writer = tf.summary.create_file_writer(logdir)
         # iniitalize learning rate
         learning_rate = 2e-03
 
         # resize images
         content = utils.resize_image(content_image, scale)
         style = utils.resize_image(style_image, scale)
-        if not quiet:
-            print(
-                'Scale: {}'.format(scale) +\
-                ' - Content size: {}x{}'.format(*utils.get_h_w(content)) +\
-                ' - Style size: {}x{}'.format(*utils.get_h_w(style)))
+        print(
+            'Scale: {}'.format(scale) +\
+            ' - Content size: {}x{}'.format(*utils.get_h_w(content)) +\
+            ' - Style size: {}x{}'.format(*utils.get_h_w(style)))
 
         # laplasian
         lap_content = tensor_ops.create_laplasian(content)
@@ -312,7 +306,7 @@ def STROTSS(
         elif i > 0 and scale != scales[-1]:
             # second ~ before last: add output image to `n`th laplasian image.
             strotss_result = utils.resize_like(strotss_result, content)
-            strotss_result = lap_content + strotss_result
+            strotss_result = strotss_result + lap_content
         else:
             # last: resize only, change initial learning rate.
             strotss_result = utils.resize_like(strotss_result, content)
@@ -320,29 +314,44 @@ def STROTSS(
   
         # start
         timer.start()
+        if record_to_tensorboard:
+            tf.summary.trace_on()
         strotss_result = strotss_in.multi_scale_strategy(
             style_image = style,
             content_image = content,
             init_strotss_image = strotss_result,
             init_lr = learning_rate)
         t = timer.stop(save_time=True, return_time=True)
-        if not quiet:
-            print('Time: {}s'.format(t))
+        print('Time: {}s'.format(t))
+        if record_to_tensorboard:
+            with writer.as_default():
+                tf.summary.trace_export(
+                    name='strotss_lv_{}'.format(scale),
+                    step=0,
+                    profiler_outdir=logdir)
+            writer.close()
 
         # if requied
         if save_all_outputs:
             f, ext = os.path.splitext(output_path)
             utils.write_image(
-                tensor_ops.clip_and_normalize(
+                tensor_ops.clip_and_denormalize(
                     strotss_result[0],
-                    None,
+                    base_image = None,
                     optimize_mode=optimize_mode), f + '_scale_{}'.format(scale) + ext)
     # write image
     base = None if not keep_shape else content_image
+
+    strotss_result = tensor_ops.clip_and_denormalize(
+        strotss_result[0], base, optimize_mode=optimize_mode)
+    if signature_text:
+        if signature_text.lower() == 'auto':
+            signature_text = output_path
+        strotss_result = utils.add_signature(strotss_result, signature_text)
     
-    utils.write_image(
-        tensor_ops.clip_and_normalize(
             strotss_result[0], base, optimize_mode=optimize_mode), output_path)
-    if not quiet:
-        print('Total training time: {:.3f}s'.format(timer.total))
-        print('Saved image to {}.\n'.format(output_path))
+    utils.write_image(strotss_result, output_path)
+    print('Total training time: {:.3f}s'.format(timer.total))
+    print('Saved image to {}.\n'.format(output_path))
+    if record_to_tensorboard:
+        print('Saved tensorboard log to logs/{}.\n'.format(current_date))
