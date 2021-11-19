@@ -349,7 +349,6 @@ def STROTSS(
             signature_text = output_path
         strotss_result = utils.add_signature(strotss_result, signature_text)
     
-            strotss_result[0], base, optimize_mode=optimize_mode), output_path)
     utils.write_image(strotss_result, output_path)
     print('Total training time: {:.3f}s'.format(timer.total))
     print('Saved image to {}.\n'.format(output_path))

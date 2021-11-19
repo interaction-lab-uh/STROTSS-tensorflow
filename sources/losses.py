@@ -225,5 +225,4 @@ def nowrap_compute_loss(
         l_p = palette_emd_loss(f_is, f_ics)
         # \mathcal{L}(E, I_c, I_s) = \\
         # \frac{\alpha*l_c + l_m + l_r + \frac{1}{\alpha}l_p}{2+\alpha+\frac{1}{\alpha}}
-        #return ((alpha*l_c) + l_m + l_r + (inv_alpha*l_p)) / (2. + alpha + inv_alpha)
-        return ((alpha*l_c) + l_m + l_r + (inv_alpha*l_p)) / (2. + alpha)
+        return ((alpha*l_c) + l_m + l_r + (inv_alpha*l_p)) / (2. + alpha + inv_alpha)
