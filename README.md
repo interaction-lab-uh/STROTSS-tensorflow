@@ -18,10 +18,13 @@ python main.py content_im.jpg style_im.jpg -o output.jpg
 python main.py content_im.jpg style_im.jpg -o output.jpg --alpha 8.0
 ```
 
-### Using mask
+### ~~Using mask~~
+<font color='red'>Did not work.</font>
+<!--
 ```text
 python main.py content_im.jpg style_im.jpg -o output.jpg --content_region content_im_guidance.jpg --style_region style_im_guidance.jpg
 ```
+-->
 
 ### Change scale level
 ```text
