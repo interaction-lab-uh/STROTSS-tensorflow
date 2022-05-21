@@ -84,10 +84,10 @@ def run(args: argparse.Namespace):
             stylized = laplacian + tf.reduce_mean(scl_style, axis=(1, 2), keepdims=True)
         elif 0 < i < args.level-1:
             stylized = utils.resize_like(stylized, scl_content) + laplacian
-            tf.keras.backend.set_value(opt.lr, 2e-3)
+            tf.keras.backend.set_value(opt.lr, args.lr)
         else:
             stylized = utils.resize_like(stylized, scl_content)
-            tf.keras.backend.set_value(opt.lr, 1e-3)
+            tf.keras.backend.set_value(opt.lr, args.lr/2)
         st_variables = [tf.Variable(img) for img in strotss.make_laplacian_pyramid(stylized)]
 
         # train step
@@ -102,15 +102,17 @@ def run(args: argparse.Namespace):
                 loss_s = loss_style(p_feat)
                 loss = (alpha * loss_c + loss_s) / loss_denom
             grad = tape.gradient(loss, st_variables)
-            return loss, grad
+            return {'loss': loss, 'loss_c': loss_c, 'loss_s': loss_s, 'grad': grad}
 
         # run
         with tqdm.tqdm(range(args.max_iter)) as pbar:
             for it in pbar:
-                loss, grad = train_step()
-                opt.apply_gradients(zip(grad, st_variables))
+                result = train_step()
+                opt.apply_gradients(zip(result['grad'], st_variables))
                 pbar.set_description(f"Scale: {scl:4d} - It: {it+1:4d}")
-                pbar.set_postfix({'loss': f'{loss:.3f}'})
+                pbar.set_postfix({'loss': f'{result["loss"]:.3f}',
+                                  'loss_c': f'{result["loss_c"]:.3f}',
+                                  'loss_s': f'{result["loss_s"]:.3f}'})
 
         stylized = strotss.fold_laplacian_pyramid(st_variables)
         alpha /= 2.

@@ -67,18 +67,14 @@ class Timer:
     def __init__(self):
         self._start = 0.
         self._stop = 0.
-        self._stopped = False
         self._elapsed = 0.
-        self.total = 0.
 
     def start(self):
         self._start = time.time()
-    
+
     def stop(self):
         self._stop = time.time()
-        self._stopped = True
         self._elapsed = round(self._stop - self._start, 3)
-        self.total += self._stop - self._start
         self._start = 0.
         self._stop = 0.
 
@@ -86,10 +82,3 @@ class Timer:
     def elapsed_time(self):
         return self._elapsed
 
-    @contextlib.contextmanager
-    def watch(self):
-        self.start()
-        try:
-            yield
-        finally:
-            self.stop()
