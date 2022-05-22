@@ -1,16 +1,22 @@
-import contextlib
 import logging
 import sys
 import time
+from typing import Optional
 
 import tensorflow as tf
 
-logger = logging.getLogger('STROTSS')
-sh = logging.StreamHandler(sys.stdout)
-sh.setFormatter(
-    logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s', "%Y-%m-%d %H:%M:%S"))
-logger.addHandler(sh)
-logger.setLevel(logging.INFO)
+
+logger = logging.getLogger(__name__)
+
+
+def make_logger(name: str):
+    global logger
+    logger = logging.getLogger(name)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(
+        logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s', "%Y-%m-%d %H:%M:%S"))
+    logger.addHandler(sh)
+    logger.setLevel(logging.INFO)
 
 
 def _validate_and_get_shape(base: tf.Tensor):
@@ -23,7 +29,9 @@ def _validate_and_get_shape(base: tf.Tensor):
     return h, w
 
 
-def resize(image: tf.Tensor, max_size: int) -> tf.Tensor:
+def resize(image: tf.Tensor, max_size: Optional[int]) -> tf.Tensor:
+    if max_size is None:
+        return image
     h, w = _validate_and_get_shape(image)
     factor = max(h/max_size, w/max_size)
     return tf.image.resize(image, (int(h/factor), int(w/factor)))
@@ -33,13 +41,18 @@ def resize_like(image: tf.Tensor, base: tf.Tensor) -> tf.Tensor:
     return tf.image.resize(image, _validate_and_get_shape(base))
 
 
-def load_image(path: str, max_size: int = 512) -> tf.Tensor:
+def load_image(path: str,
+               max_size: Optional[int] = 512,
+               dtype: tf.dtypes.DType = tf.float32,
+               batch_expand: bool = True) -> tf.Tensor:
     img = tf.io.read_file(path)
     img = tf.image.decode_jpeg(img, channels=3, dct_method="INTEGER_ACCURATE")
-    img = tf.image.convert_image_dtype(img, tf.float32)
+    img = tf.image.convert_image_dtype(img, dtype)
     img = resize(img, max_size)
 
-    return img[tf.newaxis]
+    if batch_expand:
+        return img[tf.newaxis]
+    return img
 
 
 def write_image(image: tf.Tensor, path: str):

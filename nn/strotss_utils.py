@@ -2,8 +2,10 @@ import math
 from functools import partialmethod
 from typing import List, Optional, Union, Tuple
 
+import numpy as np
 import tensorflow as tf
 
+from nn import utils
 from nn.rand import tf_rng
 
 
@@ -16,9 +18,6 @@ def _clip_and_cast(x, minval, maxval, dtype) -> tf.Tensor:
 
 
 class Sampling(tf.Module):
-    """
-    STROTSS hypercolumn sampling.
-    """
     def __init__(self, sample_size: int, **kwargs):
         super().__init__(**kwargs)
         self.sample_size = sample_size
@@ -27,8 +26,6 @@ class Sampling(tf.Module):
                 xs: List[tf.Tensor],
                 indices: tf.Tensor,
                 bilinear_sampling: bool) -> tf.Tensor:
-        indices = tf.cast(indices[:self.sample_size], tf.float32)
-
         feats = None
         index = None
         for i in range(len(xs)):
@@ -83,7 +80,10 @@ class Sampling(tf.Module):
                 feats = gathered
         return feats
 
-    def _make_indices(self, base_tensor: tf.Tensor, bilinear_sampling: bool) -> tf.Tensor:
+    def _make_indices(self,
+                      base_tensor: tf.Tensor,
+                      bilinear_sampling: bool,
+                      mask: Optional[tf.Tensor] = None) -> tf.Tensor:
         _, h, w, *_ = base_tensor.shape
         if bilinear_sampling:
             area = math.sqrt((h*w)//(128**2))
@@ -95,23 +95,38 @@ class Sampling(tf.Module):
             Y = tf.range(w)[rand_off_y::step_y]
 
             X, Y = tf.meshgrid(X, Y)
-            X = tf.random.shuffle(tf.reshape(X, [-1, 1]))
-            Y = tf.random.shuffle(tf.reshape(Y, [-1, 1]))
-            ret = tf.concat([X, Y], axis=1)
         else:
             X, Y = tf.meshgrid(tf.range(h), tf.range(w))
-            X = tf.reshape(X, [-1, 1])
-            Y = tf.reshape(Y, [-1, 1])
-            ret = tf.random.shuffle(tf.concat([X, Y], axis=1))
 
+        X = tf.reshape(X, [-1, 1])
+        Y = tf.reshape(Y, [-1, 1])
+        ret = tf.concat([X, Y], axis=1)
+
+        if mask is not None:
+            mask = tf.image.resize(mask, [h, w])
+            if tf.reduce_max(mask) < 0.1:
+                mask = tf.greater(mask + 1, 0.5)
+            else:
+                mask = tf.greater(mask, 0.5)
+            mask = tf.gather_nd(mask, ret)
+            mask = tf.reshape(mask, [-1])
+            ret = ret[mask]
+
+        # The author's implementation of shuffling is incorrect.
+        # https://github.com/nkolkin13/STROTSS/blob/a5706f96d4a408594f3a3d3ad98c1a1b2581f9e8/stylize_objectives.py#L211
+        # x and y coordinates must not be shuffled individually, but in pairs
+        # Shuffling them individually would affect style/content images in areas other than the mask
+        ret = tf.random.shuffle(ret)
+        ret = tf.cast(ret[:self.sample_size], tf.float32)
         return ret
 
     @tf.Module.with_name_scope
     def __call__(self,
                  xs: List[tf.Tensor],
                  ys: Optional[List[tf.Tensor]] = None,
+                 mask: Optional[tf.Tensor] = None,
                  bilinear_sampling: bool = False) -> Union[tf.Tensor, Tuple[tf.Tensor, tf.Tensor]]:
-        indices = self._make_indices(xs[0], bilinear_sampling)
+        indices = self._make_indices(xs[0], bilinear_sampling, mask)
         ret = self._sample(xs, indices, bilinear_sampling)
         if ys:
             ret_y = self._sample(ys, indices, bilinear_sampling)
@@ -158,3 +173,29 @@ def postprocess(final: tf.Tensor) -> tf.Tensor:
     final = final / tf.reduce_max(final)
     final = tf.cast(final * 255, tf.uint8)
     return final[0]
+
+
+def load_mask(content_path: str, style_path: str, max_size: Optional[int],
+              pixel_threth: int = 255, sample_threth: int = 1024):
+    c_mask = utils.load_image(content_path, max_size, dtype=tf.uint8, batch_expand=False).numpy()
+    c_mask = c_mask // pixel_threth * pixel_threth
+    s_mask = utils.load_image(style_path, max_size, dtype=tf.uint8, batch_expand=False).numpy()
+    s_mask = s_mask // pixel_threth * pixel_threth
+
+    uniques, counts = np.unique(c_mask.reshape(-1, 3), axis=0, return_counts=True)
+
+    # to avoid too small mask
+    uniques = uniques[counts >= sample_threth]
+
+    c_ret = []
+    s_ret = []
+    for unique in uniques:
+        c_condition = (c_mask[...,0] == unique[0]) & (c_mask[...,1] == unique[1]) & (c_mask[...,2] == unique[2])
+        s_condition = (s_mask[...,0] == unique[0]) & (s_mask[...,1] == unique[1]) & (s_mask[...,2] == unique[2])
+        if np.any(c_condition) and np.any(s_condition):
+            c_ret.append(tf.cast(c_condition, tf.float32)[..., tf.newaxis])
+            s_ret.append(tf.cast(s_condition, tf.float32)[..., tf.newaxis])
+    if not c_ret:
+        raise ValueError('No mask found')
+
+    return c_ret, s_ret

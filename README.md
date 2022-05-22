@@ -12,6 +12,14 @@ Tested on tensorflow >= 2.6.0. check `requirements.txt`.
 
 ## Usage
 
+Default:
+
 ```bash
 python run_strotss.py content_im.jpg style_im.jpg -o output.jpg
+```
+
+With mask:
+
+```bash
+python run_strotss.py content_im.jpg style_im.jpg -o output.jpg --content_mask content_mask.jpg --style_mask style_mask.jpg
 ```
