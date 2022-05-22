@@ -176,7 +176,7 @@ def postprocess(final: tf.Tensor) -> tf.Tensor:
 
 
 def load_mask(content_path: str, style_path: str, max_size: Optional[int],
-              pixel_threth: int = 255, sample_threth: int = 1024):
+              pixel_threth: int = 255, sample_threth: int = 10000):
     c_mask = utils.load_image(content_path, max_size, dtype=tf.uint8, batch_expand=False).numpy()
     c_mask = c_mask // pixel_threth * pixel_threth
     s_mask = utils.load_image(style_path, max_size, dtype=tf.uint8, batch_expand=False).numpy()
@@ -196,6 +196,6 @@ def load_mask(content_path: str, style_path: str, max_size: Optional[int],
             c_ret.append(tf.cast(c_condition, tf.float32)[..., tf.newaxis])
             s_ret.append(tf.cast(s_condition, tf.float32)[..., tf.newaxis])
     if not c_ret:
-        raise ValueError('No mask found')
+        raise Exception('No mask found')
 
     return c_ret, s_ret

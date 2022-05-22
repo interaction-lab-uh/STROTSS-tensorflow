@@ -45,6 +45,8 @@ def load_image(path: str,
                max_size: Optional[int] = 512,
                dtype: tf.dtypes.DType = tf.float32,
                batch_expand: bool = True) -> tf.Tensor:
+    if not tf.io.gfile.exists(path):
+        raise FileNotFoundError(f"File not found: {path}")
     img = tf.io.read_file(path)
     img = tf.image.decode_jpeg(img, channels=3, dct_method="INTEGER_ACCURATE")
     img = tf.image.convert_image_dtype(img, dtype)
