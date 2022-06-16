@@ -70,10 +70,12 @@ def relaxed_emd(x: tf.Tensor, y: tf.Tensor, distance: str='cosine') -> tf.Tensor
     x = reshape_2d(x)
     y = reshape_2d(y)
     
+    # Distance matrix
     C = dist_metrics[distance](x, y)
     
-    R_X = tf.reduce_mean(tf.reduce_min(C, axis=1))
-    R_Y = tf.reduce_mean(tf.reduce_min(C, axis=0))
+    # REMD
+    R_X = tf.reduce_mean(tf.reduce_min(C, axis=1)) # A -> B
+    R_Y = tf.reduce_mean(tf.reduce_min(C, axis=0)) # B -> A
     
     return tf.maximum(R_X, R_Y)
 
