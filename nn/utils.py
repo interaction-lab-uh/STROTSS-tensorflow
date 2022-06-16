@@ -42,7 +42,7 @@ def resize_like(image: tf.Tensor, base: tf.Tensor) -> tf.Tensor:
 
 
 def load_image(path: str,
-               max_size: Optional[int] = 512,
+               max_size: Optional[int] = None,
                dtype: tf.dtypes.DType = tf.float32,
                batch_expand: bool = True) -> tf.Tensor:
     if not tf.io.gfile.exists(path):
@@ -58,6 +58,13 @@ def load_image(path: str,
 
 
 def write_image(image: tf.Tensor, path: str):
+    rank = image.shape.rank
+    assert rank in [3, 4], f"Invalid rank: {rank}"
+    if rank == 4:
+        if image.shape[0] != 1:
+            raise ValueError(f"Batch size must be 1. Got {image.shape[0]}")
+        image = image[0]
+
     encoded = tf.image.encode_jpeg(image, format="rgb", quality=100)
     tf.io.write_file(path, encoded)
     logger.info(f"Wrote image to {path}")
@@ -76,6 +83,15 @@ def set_gpu(index: int = 0):
             logger.debug(f"Set GPU to {index}")
     else:
         logger.info("GPU not found. Using CPU.")
+
+
+def is_jupyter_env():
+    if 'get_ipython' in globals():
+        shell = get_ipython().__class__.__name__ # type: ignore
+        if (shell == 'ZMQInteractiveShell' or # jupyter notebook
+            shell == 'Shell'): # google colab
+            return True
+    return False
 
 
 class Timer:

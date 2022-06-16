@@ -4,7 +4,6 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
-import tqdm
 
 from nn import strotss_utils as strotss
 from nn import utils
@@ -12,6 +11,11 @@ from nn.losses import moment_matching, relaxed_emd, self_similarity
 from nn.model import VGG
 
 utils.make_logger('STROTSS')
+
+if utils.is_jupyter_env():
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
 
 
 class ContentLoss(tf.Module):
@@ -40,16 +44,7 @@ def run(args: argparse.Namespace):
     timer = utils.Timer()
     timer.start()
 
-    use_layers = ['block1_conv1',
-                  'block1_conv2',
-                  'block2_conv1',
-                  'block2_conv2',
-                  'block3_conv1',
-                  'block3_conv2',
-                  'block3_conv3',
-                  'block4_conv3',
-                  'block5_conv3']
-    vgg = VGG(use_layers, vgg_type='16', use_keras_weight=args.use_keras_weight)
+    vgg = VGG(use_keras_weight=args.use_keras_weight)
 
     content = utils.load_image(args.content_path, max_size=args.max_size)
     style = utils.load_image(args.style_path, max_size=args.max_size)
@@ -147,7 +142,7 @@ def run(args: argparse.Namespace):
                 return {'loss': loss, 'loss_c': loss_c, 'loss_s': loss_s, 'grads': grads}
 
         # run
-        with tqdm.tqdm(range(args.max_iter)) as pbar:
+        with tqdm(range(args.max_iter)) as pbar:
             for it in pbar:
                 result = train_step()
                 opt.apply_gradients(zip(result['grads'], st_variables))
